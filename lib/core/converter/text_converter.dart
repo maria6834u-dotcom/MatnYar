@@ -292,10 +292,17 @@ class TextConverter {
     result = result.replaceAll('?ed=', 'ⁱ');
     result = result.replaceAll('www.', '');
     
-    // حذف توضیحات انتهای متن (بعد از #)
-    final hashIndex = result.lastIndexOf('#');
-    if (hashIndex > 0) {
-      result = result.substring(0, hashIndex);
+    // حذف توضیحات انتهای متن (بعد از #) فقط برای پروتکل‌های VPN
+    // برای URL های معمولی (مثل تلگرام) fragment مهمه
+    final isSpecialLink = input.contains('vless://') || 
+                      input.contains('vmess://') || 
+                      input.contains('trojan://') || 
+                      input.contains('ss://');
+    if (isSpecialLink) {
+      final hashIndex = result.lastIndexOf('#');
+      if (hashIndex > 0) {
+        result = result.substring(0, hashIndex);
+      }
     }
     
     return result;
