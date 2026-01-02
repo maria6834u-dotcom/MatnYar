@@ -59,8 +59,9 @@ class TextConverter {
   // اعداد فارسی برای شماره‌گذاری
   static const List<String> _persianDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
 
-  // پیشوند برای تشخیص حالت رمزنگاری
-  static const String _encryptedPrefix = '🔐';
+  // بایت‌های magic برای تشخیص رمزنگاری (داخل داده، نه قابل مشاهده)
+  // zlib header معمولاً با 0x78 شروع میشه، ما از 0xE1 0xC1 استفاده میکنیم
+  static const List<int> _encryptedMagic = [0xE1, 0xC1];
 
   /// تبدیل عدد به رقم فارسی
   static String _toPersianNumber(int n) {
@@ -104,8 +105,8 @@ class TextConverter {
         final iv = IV.fromSecureRandom(16);
         final encrypter = Encrypter(AES(key, mode: AESMode.cbc));
         final encrypted = encrypter.encryptBytes(compressed, iv: iv);
-        // IV + داده رمز شده
-        compressed = [...iv.bytes, ...encrypted.bytes];
+        // magic + IV + داده رمز شده (magic برای تشخیص خودکار)
+        compressed = [..._encryptedMagic, ...iv.bytes, ...encrypted.bytes];
       }
 
       String encoded;
@@ -117,14 +118,14 @@ class TextConverter {
         }
         encoded = words.join(' ');
       } else if (mode == OutputMode.encrypted) {
-        // حالت رمزنگاری - حروف فارسی با پیشوند
+        // حالت رمزنگاری - حروف فارسی (بدون پیشوند قابل مشاهده)
         final buffer = StringBuffer();
         for (int i = 0; i < compressed.length; i++) {
           final b = compressed[i];
           buffer.write(_nibbles[b >> 4]);
           buffer.write(_nibbles[b & 0x0F]);
         }
-        encoded = _encryptedPrefix + buffer.toString();
+        encoded = buffer.toString();
       } else {
         // حالت فشرده - حروف فارسی
         final buffer = StringBuffer();
@@ -307,14 +308,8 @@ class TextConverter {
       // حذف شماره‌گذاری [۱/۳] اگر وجود داشت
       fullText = fullText.replaceAll(RegExp(r'\[[\d۰-۹]+/[\d۰-۹]+\]\s*'), '');
       
-      // تشخیص حالت رمزنگاری
-      final isEncrypted = fullText.startsWith(_encryptedPrefix);
-      if (isEncrypted) {
-        fullText = fullText.substring(_encryptedPrefix.length);
-      }
-      
       // تشخیص حالت: اگر کلمات فارسی داشت = طبیعی، وگرنه = فشرده
-      final isNaturalMode = !isEncrypted && _detectMode(fullText) == OutputMode.natural;
+      final isNaturalMode = _detectMode(fullText) == OutputMode.natural;
       
       List<int> bytes;
       if (isNaturalMode) {
@@ -341,11 +336,18 @@ class TextConverter {
         }
       }
 
-      // اگر رمزنگاری شده، اول رمزگشایی کن
-      if (isEncrypted && password != null && password.isNotEmpty) {
-        if (bytes.length < 16) return ''; // IV باید حداقل 16 بایت باشد
-        final iv = IV(Uint8List.fromList(bytes.sublist(0, 16)));
-        final encryptedData = Uint8List.fromList(bytes.sublist(16));
+      // تشخیص خودکار رمزنگاری با magic bytes
+      final isEncrypted = bytes.length >= 2 && 
+          bytes[0] == _encryptedMagic[0] && 
+          bytes[1] == _encryptedMagic[1];
+
+      if (isEncrypted) {
+        if (password == null || password.isEmpty) {
+          return '⚠️ برای بازگشایی رمز عبور لازم است';
+        }
+        if (bytes.length < 18) return ''; // magic(2) + IV(16)
+        final iv = IV(Uint8List.fromList(bytes.sublist(2, 18)));
+        final encryptedData = Uint8List.fromList(bytes.sublist(18));
         final key = _deriveKey(password);
         final encrypter = Encrypter(AES(key, mode: AESMode.cbc));
         try {
@@ -354,8 +356,6 @@ class TextConverter {
         } catch (e) {
           return '⚠️ رمز عبور اشتباه است';
         }
-      } else if (isEncrypted) {
-        return '⚠️ برای بازگشایی رمز عبور لازم است';
       }
 
       // decompress
@@ -449,9 +449,6 @@ class TextConverter {
   /// تشخیص اینکه متن قابل بازسازی است
   static bool isEncoded(String input) {
     if (input.isEmpty) return false;
-    
-    // بررسی پیشوند رمزنگاری
-    if (input.startsWith(_encryptedPrefix)) return true;
     
     // حذف شماره‌گذاری
     final cleaned = input.replaceAll(RegExp(r'\[[\d۰-۹]+/[\d۰-۹]+\]\s*'), '');
