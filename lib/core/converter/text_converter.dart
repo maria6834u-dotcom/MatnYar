@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:encrypt/encrypt.dart';
 
@@ -8,6 +9,7 @@ enum OutputMode {
   compact,    // فشرده - حروف فارسی
   natural,    // طبیعی - کلمات فارسی
   encrypted,  // رمزنگاری شده
+  stealth,    // کلمه‌ای - شبیه متن عادی
 }
 
 /// کلاس تبدیل متن
@@ -62,10 +64,85 @@ class TextConverter {
   // بایت‌های magic برای تشخیص رمزنگاری (داخل داده، نه قابل مشاهده)
   // zlib header معمولاً با 0x78 شروع میشه، ما از 0xE1 0xC1 استفاده میکنیم
   static const List<int> _encryptedMagic = [0xE1, 0xC1];
+  
+  // magic برای حالت stealth
+  static const List<int> _stealthMagic = [0xE2, 0xC2];
+
+  // حروف فیلر (غیر 16گانه) برای حالت stealth
+  static const List<String> _fillerChars = ['ع', 'غ', 'ف', 'ق', 'ک', 'گ', 'ل', 'م', 'ن', 'و', 'ه', 'ی', 'ض', 'ظ', 'ط', 'آ'];
+  
+  // علائم نگارشی فارسی
+  static const List<String> _punctuation = ['،', '؛', '.'];
 
   /// تبدیل عدد به رقم فارسی
   static String _toPersianNumber(int n) {
     return n.toString().split('').map((d) => _persianDigits[int.parse(d)]).join();
+  }
+
+  /// اعمال stealth روی متن فشرده - شبیه متن عادی میکنه
+  static String _applyStealth(String encoded) {
+    final random = Random();
+    final buffer = StringBuffer();
+    final chars = encoded.split('');
+    
+    int i = 0;
+    int wordLen = 0;
+    int sentenceLen = 0;
+    
+    while (i < chars.length) {
+      buffer.write(chars[i]);
+      i++;
+      wordLen++;
+      sentenceLen++;
+      
+      // هر 2-4 حرف یه فیلر اضافه کن (25% شانس)
+      if (random.nextDouble() < 0.25 && i < chars.length) {
+        buffer.write(_fillerChars[random.nextInt(_fillerChars.length)]);
+        wordLen++;
+      }
+      
+      // هر 3-6 حرف فاصله بذار (شبیه کلمه)
+      if (wordLen >= 3 + random.nextInt(4) && i < chars.length) {
+        buffer.write(' ');
+        wordLen = 0;
+        
+        // هر 15-25 حرف علامت نگارشی (شبیه جمله)
+        if (sentenceLen >= 15 + random.nextInt(11)) {
+          // حذف فاصله قبلی و گذاشتن علامت
+          final current = buffer.toString();
+          if (current.endsWith(' ')) {
+            buffer.clear();
+            buffer.write(current.substring(0, current.length - 1));
+          }
+          buffer.write(_punctuation[random.nextInt(_punctuation.length)]);
+          buffer.write(' ');
+          sentenceLen = 0;
+        }
+      }
+    }
+    
+    // padding تصادفی در انتها - همیشه زوج تا decode درست کار کنه
+    final paddingLen = 2 + (random.nextInt(2) * 2); // 2 یا 4
+    for (int p = 0; p < paddingLen; p++) {
+      buffer.write(_fillerChars[random.nextInt(_fillerChars.length)]);
+    }
+    
+    return buffer.toString();
+  }
+
+  /// حذف stealth از متن
+  static String _removeStealth(String stealthText) {
+    final buffer = StringBuffer();
+    final nibbleSet = _nibbles.toSet();
+    
+    for (final c in stealthText.split('')) {
+      // فقط حروف 16گانه رو نگه دار
+      if (nibbleSet.contains(c)) {
+        buffer.write(c);
+      }
+    }
+    
+    return buffer.toString();
   }
 
   /// ساخت کلید از رمز عبور
@@ -117,17 +194,8 @@ class TextConverter {
           words.add(_words[compressed[i]]);
         }
         encoded = words.join(' ');
-      } else if (mode == OutputMode.encrypted) {
-        // حالت رمزنگاری - حروف فارسی (بدون پیشوند قابل مشاهده)
-        final buffer = StringBuffer();
-        for (int i = 0; i < compressed.length; i++) {
-          final b = compressed[i];
-          buffer.write(_nibbles[b >> 4]);
-          buffer.write(_nibbles[b & 0x0F]);
-        }
-        encoded = buffer.toString();
       } else {
-        // حالت فشرده - حروف فارسی
+        // حالت فشرده/رمزنگاری/کلمه ای - حروف فارسی
         final buffer = StringBuffer();
         for (int i = 0; i < compressed.length; i++) {
           final b = compressed[i];
@@ -135,6 +203,11 @@ class TextConverter {
           buffer.write(_nibbles[b & 0x0F]);
         }
         encoded = buffer.toString();
+        
+        // اعمال stealth روی خروجی
+        if (mode == OutputMode.stealth) {
+          encoded = _applyStealth(encoded);
+        }
       }
 
       // اگر فقط یک قسمت خواسته
@@ -308,8 +381,13 @@ class TextConverter {
       // حذف شماره‌گذاری [۱/۳] اگر وجود داشت
       fullText = fullText.replaceAll(RegExp(r'\[[\d۰-۹]+/[\d۰-۹]+\]\s*'), '');
       
-      // تشخیص حالت: اگر کلمات فارسی داشت = طبیعی، وگرنه = فشرده
+      // تشخیص حالت: اگر کلمات فارسی داشت = طبیعی، وگرنه = فشرده/stealth
       final isNaturalMode = _detectMode(fullText) == OutputMode.natural;
+      
+      // حذف کاراکترهای اضافی (stealth mode) - فقط حروف 16گانه رو نگه میداریم
+      if (!isNaturalMode) {
+        fullText = _removeStealth(fullText);
+      }
       
       List<int> bytes;
       if (isNaturalMode) {
@@ -376,30 +454,36 @@ class TextConverter {
     if (input.contains(' ')) {
       final words = input.split(RegExp(r'\s+'));
       int wordMatch = 0;
+      int totalWords = 0;
       for (final word in words.take(15)) {
+        if (word.isEmpty) continue;
+        totalWords++;
         if (_words.contains(word)) wordMatch++;
       }
-      // اگر حداقل 2 کلمه شناخته شده داشت = طبیعی
-      if (wordMatch >= 2) return OutputMode.natural;
+      // اگر حداقل 40% کلمات شناخته شده بودند = طبیعی
+      // (stealth معمولا 0% داره چون کلماتش واقعی نیستن)
+      if (totalWords > 0 && wordMatch / totalWords >= 0.4) {
+        return OutputMode.natural;
+      }
     }
     
-    // بررسی حالت فشرده - فقط حروف nibble
+    // بررسی حالت فشرده/stealth - چک کردن نسبت حروف nibble
     int nibbleMatch = 0;
     int total = 0;
     for (final char in input.split('')) {
       if (char.trim().isEmpty) continue;
+      // علائم نگارشی رو حساب نکن
+      if (_punctuation.contains(char)) continue;
       total++;
       if (_nibbles.contains(char)) nibbleMatch++;
     }
-    // اگر بیشتر از 80% حروف nibble باشه = فشرده
-    if (total > 0 && nibbleMatch / total > 0.8) return OutputMode.compact;
     
-    // اگر فاصله نداره ولی nibble هم نیست، شاید طبیعی بدون فاصله باشه
-    // سعی کن کلمات رو پیدا کنی
-    for (final word in _words) {
-      if (input.contains(word)) return OutputMode.natural;
-    }
+    // اگر حداقل 50% حروف nibble باشه = فشرده/stealth
+    // (stealth حدود 75% داره، compact 100%)
+    if (total > 0 && nibbleMatch / total >= 0.5) return OutputMode.compact;
     
+    // اگر هیچ کدوم نبود، فرض کن compact هست
+    // (چون natural نیاز به match بالای کلمات داره)
     return OutputMode.compact;
   }
 
@@ -479,6 +563,19 @@ class TextConverter {
       return (_parsePersianNumber(match.group(1)!), _parsePersianNumber(match.group(2)!));
     }
     return null;
+  }
+
+  /// تشخیص اینکه متن رمزنگاری شده است
+  /// magic bytes 0xE1 0xC1 به حروف "شبزب" تبدیل میشن
+  static bool isEncryptedText(String input) {
+    if (input.isEmpty) return false;
+    
+    // حذف شماره‌گذاری و stealth
+    var cleaned = input.replaceAll(RegExp(r'\[[\d۰-۹]+/[\d۰-۹]+\]\s*'), '');
+    cleaned = _removeStealth(cleaned);
+    
+    // چک magic bytes: 0xE1=شب 0xC1=زب
+    return cleaned.startsWith('شبزب');
   }
 
   // Fallback برای حالت‌های خاص

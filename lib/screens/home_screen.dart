@@ -85,7 +85,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
     
     // چک کردن نیاز به رمز عبور
-    final needsPassword = input.contains('🔐');
+    final needsPassword = TextConverter.isEncryptedText(input);
     if (needsPassword && _decodePasswordController.text.isEmpty) {
       _showSnackBar('این متن رمزنگاری شده است. رمز عبور وارد کنید');
       return;
@@ -245,34 +245,65 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       const SizedBox(width: 8),
                       const Text('حالت خروجی:', style: TextStyle(fontSize: 13)),
                       const Spacer(),
-                      SegmentedButton<OutputMode>(
-                        segments: const [
-                          ButtonSegment(
+                      DropdownButton<OutputMode>(
+                        value: _outputMode,
+                        isDense: true,
+                        underline: Container(),
+                        borderRadius: BorderRadius.circular(8),
+                        items: const [
+                          DropdownMenuItem(
                             value: OutputMode.compact,
-                            label: Text('فشرده', style: TextStyle(fontSize: 11)),
-                            icon: Icon(Icons.compress, size: 16),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.compress, size: 16),
+                                SizedBox(width: 6),
+                                Text('فشرده', style: TextStyle(fontSize: 13)),
+                              ],
+                            ),
                           ),
-                          ButtonSegment(
+                          DropdownMenuItem(
+                            value: OutputMode.stealth,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.visibility_off, size: 16),
+                                SizedBox(width: 6),
+                                Text('کلمه‌ای', style: TextStyle(fontSize: 13)),
+                              ],
+                            ),
+                          ),
+                          DropdownMenuItem(
                             value: OutputMode.natural,
-                            label: Text('طبیعی', style: TextStyle(fontSize: 11)),
-                            icon: Icon(Icons.article, size: 16),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.article, size: 16),
+                                SizedBox(width: 6),
+                                Text('طبیعی', style: TextStyle(fontSize: 13)),
+                              ],
+                            ),
                           ),
-                          ButtonSegment(
+                          DropdownMenuItem(
                             value: OutputMode.encrypted,
-                            label: Text('رمزی', style: TextStyle(fontSize: 11)),
-                            icon: Icon(Icons.lock, size: 16),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.lock, size: 16),
+                                SizedBox(width: 6),
+                                Text('رمزی', style: TextStyle(fontSize: 13)),
+                              ],
+                            ),
                           ),
                         ],
-                        selected: {_outputMode},
-                        onSelectionChanged: (Set<OutputMode> newSelection) {
-                          setState(() {
-                            _outputMode = newSelection.first;
-                          });
-                          _updateEstimate();
+                        onChanged: (OutputMode? newValue) {
+                          if (newValue != null) {
+                            setState(() {
+                              _outputMode = newValue;
+                            });
+                            _updateEstimate();
+                          }
                         },
-                        style: ButtonStyle(
-                          visualDensity: VisualDensity.compact,
-                        ),
                       ),
                     ],
                   ),
@@ -280,9 +311,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   Text(
                     _outputMode == OutputMode.compact 
                       ? 'کوتاه‌تر - حروف فارسی بدون فاصله'
-                      : _outputMode == OutputMode.natural
-                        ? 'شبیه متن واقعی - کلمات فارسی با فاصله'
-                        : 'رمزنگاری شده - نیاز به رمز عبور',
+                      : _outputMode == OutputMode.stealth
+                        ? '🕵️ شبیه متن عادی'
+                        : _outputMode == OutputMode.natural
+                          ? 'شبیه متن واقعی - کلمات فارسی با فاصله'
+                          : 'رمزنگاری شده - نیاز به رمز عبور',
                     style: const TextStyle(fontSize: 11, color: Colors.grey),
                   ),
                   
@@ -504,7 +537,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           const SizedBox(height: 12),
           
           // فیلد رمز عبور برای متن‌های رمزنگاری شده
-          if (_decodeController.text.contains('🔐')) ...[
+          if (TextConverter.isEncryptedText(_decodeController.text)) ...[
             TextField(
               controller: _decodePasswordController,
               obscureText: true,
