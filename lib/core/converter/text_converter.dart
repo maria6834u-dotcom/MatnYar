@@ -69,9 +69,16 @@ class TextConverter {
 
   /// ساخت کلید از رمز عبور
   static Key _deriveKey(String password) {
-    // پد کردن یا کوتاه کردن به 32 بایت
-    final bytes = utf8.encode(password.padRight(32, '0').substring(0, 32));
-    return Key(Uint8List.fromList(bytes));
+    // تبدیل رمز به بایت و پد کردن/کوتاه کردن به 32 بایت
+    final passBytes = utf8.encode(password);
+    final List<int> keyBytes;
+    if (passBytes.length >= 32) {
+      keyBytes = passBytes.sublist(0, 32);
+    } else {
+      // پد کردن با تکرار بایت‌های رمز
+      keyBytes = List<int>.generate(32, (i) => passBytes[i % passBytes.length]);
+    }
+    return Key(Uint8List.fromList(keyBytes));
   }
 
   /// تبدیل متن به متن فارسی - برمی‌گرداند لیست پیام‌ها
