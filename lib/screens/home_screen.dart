@@ -467,7 +467,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           
           // نتیجه
           if (_decodeResult.isNotEmpty) ...[
-            Row(
+            Row(  
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
@@ -497,6 +497,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 ),
               ),
             ),
+            SizedBox(height: 16),
           ],
         ],
       ),
