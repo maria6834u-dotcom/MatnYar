@@ -1,10 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'package:encrypt/encrypt.dart';
 
 /// نوع خروجی تبدیل
 enum OutputMode {
-  compact,  // فشرده - حروف فارسی
-  natural,  // طبیعی - کلمات فارسی
+  compact,    // فشرده - حروف فارسی
+  natural,    // طبیعی - کلمات فارسی
+  encrypted,  // رمزنگاری شده
 }
 
 /// کلاس تبدیل متن
@@ -56,16 +59,27 @@ class TextConverter {
   // اعداد فارسی برای شماره‌گذاری
   static const List<String> _persianDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
 
+  // پیشوند برای تشخیص حالت رمزنگاری
+  static const String _encryptedPrefix = '🔐';
+
   /// تبدیل عدد به رقم فارسی
   static String _toPersianNumber(int n) {
     return n.toString().split('').map((d) => _persianDigits[int.parse(d)]).join();
   }
 
+  /// ساخت کلید از رمز عبور
+  static Key _deriveKey(String password) {
+    // پد کردن یا کوتاه کردن به 32 بایت
+    final bytes = utf8.encode(password.padRight(32, '0').substring(0, 32));
+    return Key(Uint8List.fromList(bytes));
+  }
+
   /// تبدیل متن به متن فارسی - برمی‌گرداند لیست پیام‌ها
   /// [parts] تعداد قسمت‌ها (پیامک‌ها) - اگر 1 باشد همه در یک پیام
   /// [optimize] بهینه‌سازی متن قبل از تبدیل
-  /// [mode] حالت خروجی - فشرده یا طبیعی
-  static List<String> encode(String input, {int parts = 1, bool optimize = false, OutputMode mode = OutputMode.compact}) {
+  /// [mode] حالت خروجی - فشرده، طبیعی یا رمزنگاری
+  /// [password] رمز عبور (فقط برای حالت رمزنگاری)
+  static List<String> encode(String input, {int parts = 1, bool optimize = false, OutputMode mode = OutputMode.compact, String? password}) {
     if (input.isEmpty) return [''];
 
     try {
@@ -75,7 +89,17 @@ class TextConverter {
       // فشرده‌سازی با سطح بالا
       final bytes = utf8.encode(processed);
       final codec = ZLibCodec(level: 9);
-      final compressed = codec.encode(bytes);
+      var compressed = codec.encode(bytes);
+
+      // اگر حالت رمزنگاری باشد
+      if (mode == OutputMode.encrypted && password != null && password.isNotEmpty) {
+        final key = _deriveKey(password);
+        final iv = IV.fromSecureRandom(16);
+        final encrypter = Encrypter(AES(key, mode: AESMode.cbc));
+        final encrypted = encrypter.encryptBytes(compressed, iv: iv);
+        // IV + داده رمز شده
+        compressed = [...iv.bytes, ...encrypted.bytes];
+      }
 
       String encoded;
       if (mode == OutputMode.natural) {
@@ -85,6 +109,15 @@ class TextConverter {
           words.add(_words[compressed[i]]);
         }
         encoded = words.join(' ');
+      } else if (mode == OutputMode.encrypted) {
+        // حالت رمزنگاری - حروف فارسی با پیشوند
+        final buffer = StringBuffer();
+        for (int i = 0; i < compressed.length; i++) {
+          final b = compressed[i];
+          buffer.write(_nibbles[b >> 4]);
+          buffer.write(_nibbles[b & 0x0F]);
+        }
+        encoded = _encryptedPrefix + buffer.toString();
       } else {
         // حالت فشرده - حروف فارسی
         final buffer = StringBuffer();
@@ -246,7 +279,8 @@ class TextConverter {
 
   /// بازسازی متن از یک یا چند قسمت
   /// می‌تواند لیست پیام‌ها یا یک پیام واحد را بگیرد
-  static String decode(dynamic input) {
+  /// [password] رمز عبور (فقط برای حالت رمزنگاری)
+  static String decode(dynamic input, {String? password}) {
     if (input == null) return '';
     
     String fullText;
@@ -266,8 +300,14 @@ class TextConverter {
       // حذف شماره‌گذاری [۱/۳] اگر وجود داشت
       fullText = fullText.replaceAll(RegExp(r'\[[\d۰-۹]+/[\d۰-۹]+\]\s*'), '');
       
+      // تشخیص حالت رمزنگاری
+      final isEncrypted = fullText.startsWith(_encryptedPrefix);
+      if (isEncrypted) {
+        fullText = fullText.substring(_encryptedPrefix.length);
+      }
+      
       // تشخیص حالت: اگر کلمات فارسی داشت = طبیعی، وگرنه = فشرده
-      final isNaturalMode = _detectMode(fullText) == OutputMode.natural;
+      final isNaturalMode = !isEncrypted && _detectMode(fullText) == OutputMode.natural;
       
       List<int> bytes;
       if (isNaturalMode) {
@@ -283,7 +323,7 @@ class TextConverter {
           }
         }
       } else {
-        // حالت فشرده - حروف فارسی
+        // حالت فشرده یا رمزنگاری - حروف فارسی
         final validChars = fullText.split('').where((c) => _nibbles.contains(c)).toList();
         bytes = <int>[];
         for (int i = 0; i < validChars.length - 1; i += 2) {
@@ -292,6 +332,23 @@ class TextConverter {
           if (high == -1 || low == -1) continue;
           bytes.add((high << 4) | low);
         }
+      }
+
+      // اگر رمزنگاری شده، اول رمزگشایی کن
+      if (isEncrypted && password != null && password.isNotEmpty) {
+        if (bytes.length < 16) return ''; // IV باید حداقل 16 بایت باشد
+        final iv = IV(Uint8List.fromList(bytes.sublist(0, 16)));
+        final encryptedData = Uint8List.fromList(bytes.sublist(16));
+        final key = _deriveKey(password);
+        final encrypter = Encrypter(AES(key, mode: AESMode.cbc));
+        try {
+          final decrypted = encrypter.decryptBytes(Encrypted(encryptedData), iv: iv);
+          bytes = decrypted;
+        } catch (e) {
+          return '⚠️ رمز عبور اشتباه است';
+        }
+      } else if (isEncrypted) {
+        return '⚠️ برای بازگشایی رمز عبور لازم است';
       }
 
       // decompress
@@ -385,6 +442,9 @@ class TextConverter {
   /// تشخیص اینکه متن قابل بازسازی است
   static bool isEncoded(String input) {
     if (input.isEmpty) return false;
+    
+    // بررسی پیشوند رمزنگاری
+    if (input.startsWith(_encryptedPrefix)) return true;
     
     // حذف شماره‌گذاری
     final cleaned = input.replaceAll(RegExp(r'\[[\d۰-۹]+/[\d۰-۹]+\]\s*'), '');

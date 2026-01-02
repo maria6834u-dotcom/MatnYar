@@ -14,6 +14,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   late TabController _tabController;
   final TextEditingController _encodeController = TextEditingController();
   final TextEditingController _decodeController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _decodePasswordController = TextEditingController();
   
   List<String> _encodeResults = [];
   String _decodeResult = '';
@@ -33,6 +35,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _tabController.dispose();
     _encodeController.dispose();
     _decodeController.dispose();
+    _passwordController.dispose();
+    _decodePasswordController.dispose();
     super.dispose();
   }
 
@@ -42,12 +46,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       _showSnackBar('لطفاً متنی وارد کنید');
       return;
     }
+    if (_outputMode == OutputMode.encrypted && _passwordController.text.isEmpty) {
+      _showSnackBar('لطفاً رمز عبور وارد کنید');
+      return;
+    }
     setState(() {
       _encodeResults = TextConverter.encode(
         input, 
         parts: _selectedParts, 
         optimize: _optimizeLinks,
         mode: _outputMode,
+        password: _outputMode == OutputMode.encrypted ? _passwordController.text : null,
       );
     });
   }
@@ -75,12 +84,22 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       return;
     }
     
+    // چک کردن نیاز به رمز عبور
+    final needsPassword = input.contains('🔐');
+    if (needsPassword && _decodePasswordController.text.isEmpty) {
+      _showSnackBar('این متن رمزنگاری شده است. رمز عبور وارد کنید');
+      return;
+    }
+    
     if (!TextConverter.isEncoded(input)) {
       _showSnackBar('متن وارد شده قابل بازسازی نیست');
       return;
     }
     
-    final result = TextConverter.decode(input);
+    final result = TextConverter.decode(
+      input,
+      password: needsPassword ? _decodePasswordController.text : null,
+    );
     if (result.isEmpty) {
       _showSnackBar('خطا در بازسازی متن');
       return;
@@ -238,6 +257,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             label: Text('طبیعی', style: TextStyle(fontSize: 11)),
                             icon: Icon(Icons.article, size: 16),
                           ),
+                          ButtonSegment(
+                            value: OutputMode.encrypted,
+                            label: Text('رمزی', style: TextStyle(fontSize: 11)),
+                            icon: Icon(Icons.lock, size: 16),
+                          ),
                         ],
                         selected: {_outputMode},
                         onSelectionChanged: (Set<OutputMode> newSelection) {
@@ -256,9 +280,31 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   Text(
                     _outputMode == OutputMode.compact 
                       ? 'کوتاه‌تر - حروف فارسی بدون فاصله'
-                      : 'شبیه متن واقعی - کلمات فارسی با فاصله',
+                      : _outputMode == OutputMode.natural
+                        ? 'شبیه متن واقعی - کلمات فارسی با فاصله'
+                        : 'رمزنگاری شده - نیاز به رمز عبور',
                     style: const TextStyle(fontSize: 11, color: Colors.grey),
                   ),
+                  
+                  // فیلد رمز عبور (فقط در حالت رمزنگاری)
+                  if (_outputMode == OutputMode.encrypted) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _passwordController,
+                      obscureText: true,
+                      decoration: InputDecoration(
+                        labelText: 'رمز عبور',
+                        hintText: 'رمز عبور را وارد کنید',
+                        prefixIcon: const Icon(Icons.key, size: 20),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        isDense: true,
+                      ),
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ],
                   const Divider(),
                   // سوئیچ بهینه‌سازی لینک
                   Row(
@@ -455,7 +501,24 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             ),
             onChanged: (_) => setState(() {}),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
+          
+          // فیلد رمز عبور برای متن‌های رمزنگاری شده
+          if (_decodeController.text.contains('🔐')) ...[
+            TextField(
+              controller: _decodePasswordController,
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: 'رمز عبور',
+                hintText: 'این متن رمزنگاری شده است',
+                prefixIcon: const Icon(Icons.key),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           
           // دکمه بازسازی
           ElevatedButton.icon(
